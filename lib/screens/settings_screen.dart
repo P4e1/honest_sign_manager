@@ -7,6 +7,7 @@ import '../providers/upload_provider.dart';
 import '../services/database_service.dart';
 import '../services/excel_service.dart';
 import '../services/settings_service.dart';
+import '../services/shared_store.dart';
 import 'widgets.dart';
 
 class SettingsScreen extends StatefulWidget {
@@ -27,10 +28,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
   String? _importResult;
   bool _importOk = true;
 
+  late final _storeCtrl = TextEditingController(text: _settings.storePath);
+  bool _checkingStore = false;
+  String? _storeCheckResult;
+  bool _storeCheckOk = false;
+
   @override
   void dispose() {
     _tokenCtrl.dispose();
     _batchCtrl.dispose();
+    _storeCtrl.dispose();
     super.dispose();
   }
 
@@ -91,6 +98,41 @@ class _SettingsScreenState extends State<SettingsScreen> {
           'Ошибка импорта: ${e is FormatException ? e.message : e}';
     } finally {
       if (mounted) setState(() => _importing = false);
+    }
+  }
+
+  Future<void> _saveStorePath() async {
+    final path = _storeCtrl.text.trim();
+    if (path.isEmpty) {
+      showSnack(context, 'Путь не может быть пустым', error: true);
+      return;
+    }
+    await _settings.setStorePath(path);
+    if (mounted) showSnack(context, 'Путь к файловому серверу сохранён');
+  }
+
+  Future<void> _checkStoreAccess() async {
+    setState(() {
+      _checkingStore = true;
+      _storeCheckResult = null;
+    });
+    try {
+      final path = _storeCtrl.text.trim();
+      if (path.isEmpty) {
+        _storeCheckOk = false;
+        _storeCheckResult = 'Путь не указан';
+        return;
+      }
+      await _settings.setStorePath(path);
+      final store = SharedStore(path);
+      final error = await store.checkAccess();
+      _storeCheckOk = error == null;
+      _storeCheckResult = error ?? 'Доступ есть, запись возможна';
+    } catch (e) {
+      _storeCheckOk = false;
+      _storeCheckResult = 'Ошибка: $e';
+    } finally {
+      if (mounted) setState(() => _checkingStore = false);
     }
   }
 
@@ -198,8 +240,49 @@ class _SettingsScreenState extends State<SettingsScreen> {
             label: const Text('Очистить список последних адресов'),
           ),
         ]),
+        _card('Файловый сервер (общая история)', [
+          const Text(
+            'Путь к сетевой папке. Все пользователи должны иметь право на чтение и запись.',
+            style: TextStyle(color: Colors.grey),
+          ),
+          const SizedBox(height: 8),
+          TextField(
+            controller: _storeCtrl,
+            decoration: const InputDecoration(
+              border: OutlineInputBorder(),
+              labelText: 'Путь к папке (UNC или локальный)',
+              hintText: r'\\192.168.2.11\obmen\Работа\HonestSignManager',
+              prefixIcon: Icon(Icons.folder_shared_outlined),
+            ),
+          ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              FilledButton.icon(
+                onPressed: _saveStorePath,
+                icon: const Icon(Icons.save),
+                label: const Text('Сохранить'),
+              ),
+              const SizedBox(width: 12),
+              OutlinedButton.icon(
+                onPressed: _checkingStore ? null : _checkStoreAccess,
+                icon: _checkingStore
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2))
+                    : const Icon(Icons.check_circle_outline),
+                label: const Text('Проверить доступ'),
+              ),
+            ],
+          ),
+          if (_storeCheckResult != null) ...[
+            const SizedBox(height: 8),
+            ResultBanner(success: _storeCheckOk, message: _storeCheckResult!),
+          ],
+        ]),
         _card('О данных', [
-          SelectableText('База истории: $dbPath'),
+          SelectableText('Локальный кеш: $dbPath'),
         ]),
       ],
     );

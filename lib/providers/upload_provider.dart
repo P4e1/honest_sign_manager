@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/foundation.dart';
 
 import '../models/marking_code.dart';
@@ -7,6 +9,7 @@ import '../services/code_processor.dart';
 import '../services/database_service.dart';
 import '../services/excel_service.dart';
 import '../services/settings_service.dart';
+import '../services/shared_store.dart';
 import '../services/terminal_api.dart';
 import '../utils/terminal_address.dart';
 
@@ -217,8 +220,12 @@ class UploadProvider extends ChangeNotifier {
 
     // Сохраняем в историю всё, что терминал принял (даже при частичном сбое).
     int? recordId;
+    String? storeId;
     if (accepted.isNotEmpty) {
+      final now = DateTime.now();
+      storeId = SharedStore.generateStoreId(now);
       final record = UploadRecord(
+        storeId: storeId,
         terminalUrl: t.baseUrl,
         terminalKey: t.key,
         productId: product.id,
@@ -227,11 +234,25 @@ class UploadProvider extends ChangeNotifier {
         codesCount: accepted.length,
         httpStatus: lastStatus ?? 201,
         status: RecordStatus.loaded,
-        uploadedAt: DateTime.now(),
+        uploadedAt: now,
+        author: Platform.localHostname,
+        pendingRecord: true,
       );
       recordId = await _db.saveUpload(record, accepted);
       await _settings.addRecentUrl(terminalUrl.trim());
       recentUrls = _settings.recentUrls;
+
+      // Пытаемся сразу записать на файловый сервер.
+      final storePath = _settings.storePath;
+      if (storePath.isNotEmpty) {
+        try {
+          final store = SharedStore(storePath);
+          await store.writeRecord(record, accepted);
+          await _db.markRecordSynced(storeId);
+        } catch (_) {
+          // Шара недоступна — запись в очереди, дойдёт при следующей синхронизации.
+        }
+      }
     }
 
     isUploading = false;

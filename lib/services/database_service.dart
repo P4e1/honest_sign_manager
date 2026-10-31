@@ -1,8 +1,8 @@
 import 'dart:io';
 
+import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
-import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import '../models/marking_code.dart';
 import '../models/product.dart';
@@ -15,7 +15,8 @@ class DuplicateHit {
   const DuplicateHit(this.raw, this.recordId);
 }
 
-/// Локальная база SQLite: справочник товаров, история, коды.
+/// Локальный SQLite-кеш.
+/// Может быть полностью удалён и пересоздан из файлового сервера.
 class DatabaseService {
   late final Database _db;
   late final String path;
@@ -24,14 +25,15 @@ class DatabaseService {
     sqfliteFfiInit();
     final dir = await getApplicationSupportDirectory();
     await Directory(dir.path).create(recursive: true);
-    path = p.join(dir.path, 'honest_sign.db');
+    path = p.join(dir.path, 'cache.db');
 
     _db = await databaseFactoryFfi.openDatabase(
       path,
       options: OpenDatabaseOptions(
-        version: 1,
+        version: 2,
         onConfigure: (db) => db.execute('PRAGMA foreign_keys = ON'),
         onCreate: _onCreate,
+        onUpgrade: _onUpgrade,
       ),
     );
   }
@@ -46,17 +48,21 @@ class DatabaseService {
 
     await db.execute('''
       CREATE TABLE upload_records (
-        id           INTEGER PRIMARY KEY AUTOINCREMENT,
-        terminal_url TEXT    NOT NULL,
-        terminal_key TEXT    NOT NULL,
-        product_id   INTEGER NOT NULL,
-        product_name TEXT    NOT NULL,
-        file_name    TEXT    NOT NULL,
-        codes_count  INTEGER NOT NULL,
-        http_status  INTEGER NOT NULL,
-        status       TEXT    NOT NULL,
-        uploaded_at  TEXT    NOT NULL,
-        deleted_at   TEXT
+        id                INTEGER PRIMARY KEY AUTOINCREMENT,
+        store_id          TEXT    NOT NULL UNIQUE,
+        terminal_url      TEXT    NOT NULL,
+        terminal_key      TEXT    NOT NULL,
+        product_id        INTEGER NOT NULL,
+        product_name      TEXT    NOT NULL,
+        file_name         TEXT    NOT NULL,
+        codes_count       INTEGER NOT NULL,
+        http_status       INTEGER NOT NULL,
+        status            TEXT    NOT NULL,
+        uploaded_at       TEXT    NOT NULL,
+        deleted_at        TEXT,
+        author            TEXT    NOT NULL DEFAULT '',
+        pending_record    INTEGER NOT NULL DEFAULT 0,
+        pending_tombstone INTEGER NOT NULL DEFAULT 0
       )''');
 
     await db.execute('''
@@ -74,11 +80,25 @@ class DatabaseService {
     await db.execute(
         'CREATE INDEX idx_codes_terminal_raw ON codes(terminal_key, raw)');
     await db.execute('CREATE INDEX idx_codes_record ON codes(record_id)');
+    await db.execute(
+        'CREATE UNIQUE INDEX idx_records_store_id ON upload_records(store_id)');
   }
 
-  // ============================ ТОВАРЫ ============================
+  Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
+    if (oldVersion < 2) {
+      await db.execute(
+          'ALTER TABLE upload_records ADD COLUMN store_id TEXT NOT NULL DEFAULT ""');
+      await db.execute(
+          'ALTER TABLE upload_records ADD COLUMN author TEXT NOT NULL DEFAULT ""');
+      await db.execute(
+          'ALTER TABLE upload_records ADD COLUMN pending_record INTEGER NOT NULL DEFAULT 0');
+      await db.execute(
+          'ALTER TABLE upload_records ADD COLUMN pending_tombstone INTEGER NOT NULL DEFAULT 0');
+    }
+  }
 
-  /// Полностью заменяет справочник товаров.
+  // ──────────────────────── ТОВАРЫ ────────────────────────
+
   Future<void> replaceProducts(List<Product> products) async {
     await _db.transaction((txn) async {
       await txn.delete('products');
@@ -96,47 +116,108 @@ class DatabaseService {
     return rows.map(Product.fromMap).toList();
   }
 
-  // ============================ ИСТОРИЯ ============================
+  // ──────────────────────── ЗАПИСИ ────────────────────────
 
-  /// Сохраняет запись и её коды в одной транзакции. Возвращает номер записи.
+  /// Сохраняет запись и её коды; возвращает rowid.
   Future<int> saveUpload(UploadRecord record, List<MarkingCode> codes) {
     return _db.transaction((txn) async {
-      final recordId = await txn.insert('upload_records', record.toMap());
+      final recordId = await txn.insert('upload_records', record.toMap(),
+          conflictAlgorithm: ConflictAlgorithm.replace);
       final batch = txn.batch();
       for (final code in codes) {
-        final map = code.toMap()..['record_id'] = recordId;
-        batch.insert('codes', map);
+        batch.insert('codes', code.toMap()..['record_id'] = recordId,
+            conflictAlgorithm: ConflictAlgorithm.ignore);
       }
       await batch.commit(noResult: true);
       return recordId;
     });
   }
 
+  /// Вставляет записи из файлового сервера; пропускает уже существующие.
+  Future<void> upsertFromStore(
+      UploadRecord record, List<MarkingCode> codes) async {
+    await _db.transaction((txn) async {
+      final existing = await txn.query('upload_records',
+          where: 'store_id = ?', whereArgs: [record.storeId]);
+      if (existing.isNotEmpty) return;
+      final recordId = await txn.insert('upload_records', record.toMap());
+      final batch = txn.batch();
+      for (final code in codes) {
+        batch.insert('codes', code.toMap()..['record_id'] = recordId,
+            conflictAlgorithm: ConflictAlgorithm.ignore);
+      }
+      await batch.commit(noResult: true);
+    });
+  }
+
   Future<List<UploadRecord>> getRecords() async {
-    final rows = await _db.query('upload_records', orderBy: 'id DESC');
+    final rows =
+        await _db.query('upload_records', orderBy: 'uploaded_at DESC');
     return rows.map(UploadRecord.fromMap).toList();
   }
 
   Future<List<UploadRecord>> getRecordsByIds(Iterable<int> ids) async {
     final list = ids.toList();
     if (list.isEmpty) return [];
-    final placeholders = List.filled(list.length, '?').join(',');
+    final ph = List.filled(list.length, '?').join(',');
     final rows = await _db.query('upload_records',
-        where: 'id IN ($placeholders)', whereArgs: list, orderBy: 'id');
+        where: 'id IN ($ph)', whereArgs: list);
     return rows.map(UploadRecord.fromMap).toList();
   }
 
-  Future<void> markRecordDeleted(int recordId) async {
+  Future<Set<String>> getAllStoreIds() async {
+    final rows =
+        await _db.query('upload_records', columns: ['store_id']);
+    return rows.map((r) => r['store_id'] as String).toSet();
+  }
+
+  Future<void> markRecordDeleted(int recordId,
+      {bool pendingTombstone = false}) async {
     await _db.update(
       'upload_records',
       {
         'status': RecordStatus.deleted,
         'deleted_at': DateTime.now().toIso8601String(),
+        'pending_tombstone': pendingTombstone ? 1 : 0,
       },
       where: 'id = ?',
       whereArgs: [recordId],
     );
   }
+
+  Future<void> markTombstoneSynced(String storeId) async {
+    await _db.update(
+      'upload_records',
+      {'pending_tombstone': 0},
+      where: 'store_id = ?',
+      whereArgs: [storeId],
+    );
+  }
+
+  Future<void> markRecordSynced(String storeId) async {
+    await _db.update(
+      'upload_records',
+      {'pending_record': 0},
+      where: 'store_id = ?',
+      whereArgs: [storeId],
+    );
+  }
+
+  /// Все записи, не сохранённые на шару.
+  Future<List<UploadRecord>> getPendingRecords() async {
+    final rows = await _db.query('upload_records',
+        where: 'pending_record = 1');
+    return rows.map(UploadRecord.fromMap).toList();
+  }
+
+  /// Все надгробия, не доставленные на шару.
+  Future<List<UploadRecord>> getPendingTombstones() async {
+    final rows = await _db.query('upload_records',
+        where: 'pending_tombstone = 1');
+    return rows.map(UploadRecord.fromMap).toList();
+  }
+
+  // ──────────────────────── КОДЫ ────────────────────────
 
   Future<List<MarkingCode>> getCodes(int recordId) async {
     final rows = await _db.query('codes',
@@ -144,29 +225,55 @@ class DatabaseService {
     return rows.map(MarkingCode.fromMap).toList();
   }
 
-  /// Ищет среди [raws] коды, уже загруженные на терминал [terminalKey]
-  /// в записях со статусом «Загружено».
+  Future<MarkingCode?> getCodeByRecordAndRaw(
+      int recordId, String raw) async {
+    final rows = await _db.query('codes',
+        where: 'record_id = ? AND raw = ?', whereArgs: [recordId, raw]);
+    return rows.isEmpty ? null : MarkingCode.fromMap(rows.first);
+  }
+
+  /// Ищет коды, уже загруженные на [terminalKey] со статусом «Загружено».
   Future<List<DuplicateHit>> findLoadedDuplicates(
       String terminalKey, List<String> raws) async {
     final hits = <DuplicateHit>[];
-    const chunkSize = 500; // ограничение SQLite на число параметров
+    const chunkSize = 500;
     for (var i = 0; i < raws.length; i += chunkSize) {
       final part = raws.sublist(
-          i, i + chunkSize > raws.length ? raws.length : i + chunkSize);
-      final placeholders = List.filled(part.length, '?').join(',');
+          i, (i + chunkSize < raws.length) ? i + chunkSize : raws.length);
+      final ph = List.filled(part.length, '?').join(',');
       final rows = await _db.rawQuery('''
         SELECT c.raw, c.record_id
         FROM codes c
         JOIN upload_records r ON r.id = c.record_id
         WHERE c.terminal_key = ?
           AND r.status = ?
-          AND c.raw IN ($placeholders)
+          AND c.raw IN ($ph)
       ''', [terminalKey, RecordStatus.loaded, ...part]);
       for (final row in rows) {
-        hits.add(DuplicateHit(row['raw'] as String, row['record_id'] as int));
+        hits.add(
+            DuplicateHit(row['raw'] as String, row['record_id'] as int));
       }
     }
     return hits;
+  }
+
+  Future<UploadRecord?> getRecordByStoreId(String storeId) async {
+    final rows = await _db.query('upload_records',
+        where: 'store_id = ?', whereArgs: [storeId]);
+    return rows.isEmpty ? null : UploadRecord.fromMap(rows.first);
+  }
+
+  Future<void> markRecordDeletedByStoreId(String storeId) async {
+    await _db.update(
+      'upload_records',
+      {
+        'status': RecordStatus.deleted,
+        'deleted_at': DateTime.now().toIso8601String(),
+        'pending_tombstone': 0,
+      },
+      where: 'store_id = ?',
+      whereArgs: [storeId],
+    );
   }
 
   Future<void> close() => _db.close();

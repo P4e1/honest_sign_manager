@@ -32,7 +32,6 @@ class MyApp extends StatelessWidget {
   }
 }
 
-/// Каркас: боковое меню + три вкладки (состояние вкладок сохраняется).
 class HomeShell extends StatefulWidget {
   const HomeShell({super.key});
 

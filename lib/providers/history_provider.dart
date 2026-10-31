@@ -4,10 +4,11 @@ import '../models/marking_code.dart';
 import '../models/upload_record.dart';
 import '../services/database_service.dart';
 import '../services/settings_service.dart';
+import '../services/shared_store.dart';
+import '../services/sync_service.dart';
 import '../services/terminal_api.dart';
 import '../utils/terminal_address.dart';
 
-/// История выгрузок: фильтры, поиск, удаление с терминала.
 class HistoryProvider extends ChangeNotifier {
   final DatabaseService _db;
   final SettingsService _settings;
@@ -16,11 +17,13 @@ class HistoryProvider extends ChangeNotifier {
 
   List<UploadRecord> _all = [];
   bool isLoading = false;
-
-  /// Номер записи, которая сейчас удаляется с терминала.
   int? deletingId;
 
-  // ------------------------------ фильтры ------------------------------
+  /// Результат последней синхронизации.
+  SyncResult? lastSync;
+  DateTime? lastSyncAt;
+
+  // ─── Фильтры ─────────────────────────────────────────────────────────────────
 
   String search = '';
   String? terminalKey;
@@ -38,7 +41,6 @@ class HistoryProvider extends ChangeNotifier {
   List<String> get terminalKeys =>
       (_all.map((r) => r.terminalKey).toSet().toList()..sort());
 
-  /// Товары, встречающиеся в истории: ID → наименование.
   Map<int, String> get productsInHistory {
     final map = <int, String>{};
     for (final r in _all) {
@@ -56,7 +58,8 @@ class HistoryProvider extends ChangeNotifier {
       if (status != null && r.status != status) return false;
       if (dateRange != null) {
         final from = DateUtils.dateOnly(dateRange!.start);
-        final to = DateUtils.dateOnly(dateRange!.end).add(const Duration(days: 1));
+        final to = DateUtils.dateOnly(dateRange!.end)
+            .add(const Duration(days: 1));
         if (r.uploadedAt.isBefore(from) || !r.uploadedAt.isBefore(to)) {
           return false;
         }
@@ -68,7 +71,8 @@ class HistoryProvider extends ChangeNotifier {
           r.terminalKey,
           r.terminalUrl,
           r.fileName,
-          '№${r.id}',
+          r.author,
+          r.storeId,
         ].join(' ').toLowerCase();
         if (!haystack.contains(q)) return false;
       }
@@ -76,30 +80,13 @@ class HistoryProvider extends ChangeNotifier {
     }).toList();
   }
 
-  void setSearch(String v) {
-    search = v;
-    notifyListeners();
-  }
+  // ─── Изменение фильтров ──────────────────────────────────────────────────────
 
-  void setTerminalKey(String? v) {
-    terminalKey = v;
-    notifyListeners();
-  }
-
-  void setProductId(int? v) {
-    productId = v;
-    notifyListeners();
-  }
-
-  void setStatus(String? v) {
-    status = v;
-    notifyListeners();
-  }
-
-  void setDateRange(DateTimeRange? v) {
-    dateRange = v;
-    notifyListeners();
-  }
+  void setSearch(String v) { search = v; notifyListeners(); }
+  void setTerminalKey(String? v) { terminalKey = v; notifyListeners(); }
+  void setProductId(int? v) { productId = v; notifyListeners(); }
+  void setStatus(String? v) { status = v; notifyListeners(); }
+  void setDateRange(DateTimeRange? v) { dateRange = v; notifyListeners(); }
 
   void clearFilters() {
     search = '';
@@ -110,12 +97,14 @@ class HistoryProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  // ------------------------------ данные ------------------------------
+  // ─── Загрузка данных ─────────────────────────────────────────────────────────
 
+  /// Синхронизирует с шарой, потом читает кеш.
   Future<void> load() async {
     isLoading = true;
     notifyListeners();
     try {
+      await _sync();
       _all = await _db.getRecords();
     } finally {
       isLoading = false;
@@ -123,19 +112,42 @@ class HistoryProvider extends ChangeNotifier {
     }
   }
 
+  /// Только обновить из локального кеша, без обращения к шаре.
+  Future<void> reload() async {
+    _all = await _db.getRecords();
+    notifyListeners();
+  }
+
+  Future<void> _sync() async {
+    final storePath = _settings.storePath;
+    if (storePath.isEmpty) return;
+
+    final store = SharedStore(storePath);
+    final sync = SyncService(_db, store);
+    lastSync = await sync.sync();
+    lastSyncAt = DateTime.now();
+  }
+
   Future<List<MarkingCode>> codesOf(UploadRecord record) =>
       _db.getCodes(record.id!);
 
-  /// Удаляет все коды записи с терминала. Возвращает текст ошибки или null.
+  // ─── Удаление с терминала ────────────────────────────────────────────────────
+
+  /// Возвращает текст ошибки или null при успехе.
   Future<String?> deleteFromTerminal(UploadRecord record) async {
     final token = _settings.token;
-    if (token.isEmpty) return 'Не задан токен авторизации (вкладка «Настройки»)';
+    if (token.isEmpty) {
+      return 'Не задан токен авторизации (вкладка «Настройки»)';
+    }
 
     final terminal = TerminalAddress.tryParse(record.terminalUrl);
-    if (terminal == null) return 'Некорректный адрес терминала в записи';
+    if (terminal == null) {
+      return 'Некорректный адрес терминала в записи';
+    }
 
     deletingId = record.id;
     notifyListeners();
+
     try {
       final codes = await _db.getCodes(record.id!);
       if (codes.isEmpty) return 'В записи нет кодов';
@@ -144,13 +156,28 @@ class HistoryProvider extends ChangeNotifier {
         terminal: terminal,
         base64Codes: codes.map((c) => c.base64).toList(),
       );
+
       if (!res.ok) {
         return res.statusCode == null
             ? res.error
             : 'Ошибка ${res.statusCode}: ${res.error}';
       }
 
-      await _db.markRecordDeleted(record.id!);
+      // Сохраняем локально. Надгробие досылаем на шару.
+      await _db.markRecordDeleted(record.id!, pendingTombstone: true);
+
+      // Пробуем сразу досдать надгробие на шару.
+      final storePath = _settings.storePath;
+      if (storePath.isNotEmpty) {
+        try {
+          final store = SharedStore(storePath);
+          await store.writeTombstone(record.storeId);
+          await _db.markTombstoneSynced(record.storeId);
+        } catch (_) {
+          // Шара недоступна — надгробие в очереди, дойдёт при следующей синхронизации.
+        }
+      }
+
       _all = await _db.getRecords();
       return null;
     } finally {
