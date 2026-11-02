@@ -232,6 +232,21 @@ class DatabaseService {
     return rows.isEmpty ? null : MarkingCode.fromMap(rows.first);
   }
 
+  /// Все коды, загруженные на [terminalKey] по товару [productId]
+  /// в записях со статусом «Загружено». Используется разделом «Остатки».
+  Future<List<MarkingCode>> getLoadedCodesForProduct(
+      String terminalKey, int productId) async {
+    final rows = await _db.rawQuery('''
+      SELECT c.* FROM codes c
+      JOIN upload_records r ON r.id = c.record_id
+      WHERE c.terminal_key = ?
+        AND r.product_id = ?
+        AND r.status = ?
+      ORDER BY c.id
+    ''', [terminalKey, productId, RecordStatus.loaded]);
+    return rows.map(MarkingCode.fromMap).toList();
+  }
+
   /// Ищет коды, уже загруженные на [terminalKey] со статусом «Загружено».
   Future<List<DuplicateHit>> findLoadedDuplicates(
       String terminalKey, List<String> raws) async {

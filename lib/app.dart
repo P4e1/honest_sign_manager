@@ -3,8 +3,10 @@ import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:provider/provider.dart';
 
 import 'providers/history_provider.dart';
+import 'providers/stock_provider.dart';
 import 'screens/history_screen.dart';
 import 'screens/settings_screen.dart';
+import 'screens/stock_screen.dart';
 import 'screens/upload_screen.dart';
 
 class MyApp extends StatelessWidget {
@@ -44,7 +46,8 @@ class _HomeShellState extends State<HomeShell> {
 
   void _select(int index) {
     setState(() => _index = index);
-    if (index == 1) context.read<HistoryProvider>().load();
+    if (index == 1) context.read<StockProvider>().init();
+    if (index == 2) context.read<HistoryProvider>().load();
   }
 
   @override
@@ -63,6 +66,11 @@ class _HomeShellState extends State<HomeShell> {
                 label: Text('Выгрузка'),
               ),
               NavigationRailDestination(
+                icon: Icon(Icons.inventory_2_outlined),
+                selectedIcon: Icon(Icons.inventory_2),
+                label: Text('Остатки'),
+              ),
+              NavigationRailDestination(
                 icon: Icon(Icons.history),
                 label: Text('История'),
               ),
@@ -79,6 +87,7 @@ class _HomeShellState extends State<HomeShell> {
               index: _index,
               children: const [
                 UploadScreen(),
+                StockScreen(),
                 HistoryScreen(),
                 SettingsScreen(),
               ],

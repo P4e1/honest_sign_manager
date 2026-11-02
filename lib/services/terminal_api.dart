@@ -63,6 +63,91 @@ class TerminalApi {
     return _send(() => _dio.delete(terminal.endpoint(deletePath), data: body));
   }
 
+  /// GET /v1/honest-sign/codes/{productId}/count
+  /// Количество свободных (NEW) кодов по товару.
+  Future<ApiResult> countFreeCodes({
+    required TerminalAddress terminal,
+    required int productId,
+  }) {
+    return _send(
+      () => _dio.get(terminal.endpoint('/v1/honest-sign/codes/$productId/count')),
+    );
+  }
+
+  /// GET /v1/honest-sign/codes/{code} — карточка одного кода.
+  /// Код передаётся в Base64, поэтому кодируется percent-encoding.
+  Future<ApiResult> getCode({
+    required TerminalAddress terminal,
+    required String base64Code,
+  }) {
+    final encoded = Uri.encodeComponent(base64Code);
+    return _send(
+      () => _dio.get(terminal.endpoint('/v1/honest-sign/codes/$encoded')),
+    );
+  }
+
+  /// GET /v1/honest-sign/labeling-history — одна страница.
+  ///
+  /// В API нет фильтра по товару: только статус экспорта и дата создания.
+  /// Поэтому фильтрация по productId делается на клиенте.
+  Future<ApiResult> getLabelingHistory({
+    required TerminalAddress terminal,
+    required List<String> exportStatus,
+    int skip = 0,
+    int take = 1000,
+    DateTime? createdAtAfter,
+  }) {
+    final query = <String, dynamic>{
+      'skip': skip,
+      'take': take,
+      'exportStatus': exportStatus,
+      if (createdAtAfter != null)
+        'createdAtAfter': createdAtAfter.toUtc().toIso8601String(),
+    };
+    return _send(
+      () => _dio.get(
+        terminal.endpoint('/v1/honest-sign/labeling-history'),
+        queryParameters: query,
+      ),
+    );
+  }
+
+  /// Забирает все страницы истории до неполной страницы или [maxPages].
+  Future<ApiResult> getAllLabelingHistory({
+    required TerminalAddress terminal,
+    required List<String> exportStatus,
+    DateTime? createdAtAfter,
+    int pageSize = 1000,
+    int maxPages = 50,
+    void Function(int loaded)? onProgress,
+  }) async {
+    final all = <dynamic>[];
+    var skip = 0;
+
+    for (var page = 0; page < maxPages; page++) {
+      final res = await getLabelingHistory(
+        terminal: terminal,
+        exportStatus: exportStatus,
+        skip: skip,
+        take: pageSize,
+        createdAtAfter: createdAtAfter,
+      );
+
+      if (!res.ok) return res;
+
+      final data = res.data;
+      if (data is! List || data.isEmpty) break;
+
+      all.addAll(data);
+      onProgress?.call(all.length);
+
+      if (data.length < pageSize) break;
+      skip += pageSize;
+    }
+
+    return ApiResult(ok: true, statusCode: 200, data: all);
+  }
+
   Future<ApiResult> _send(Future<Response<dynamic>> Function() request) async {
     try {
       final response = await request();

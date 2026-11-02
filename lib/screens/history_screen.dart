@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 
 import '../models/upload_record.dart';
 import '../providers/history_provider.dart';
+import '../services/sync_service.dart';
 import 'record_details_dialog.dart';
 import 'widgets.dart';
 
@@ -99,8 +100,14 @@ class _HistoryScreenState extends State<HistoryScreen> {
           const SizedBox(height: 12),
           _buildFilters(h),
           const SizedBox(height: 8),
-          Text('Найдено записей: ${records.length}',
-              style: Theme.of(context).textTheme.bodySmall),
+          Row(
+            children: [
+              Text('Найдено записей: ${records.length}',
+                  style: Theme.of(context).textTheme.bodySmall),
+              const SizedBox(width: 16),
+              _buildSyncStatus(h),
+            ],
+          ),
           const SizedBox(height: 8),
           Expanded(
             child: h.isLoading && records.isEmpty
@@ -109,6 +116,37 @@ class _HistoryScreenState extends State<HistoryScreen> {
                     ? const Center(child: Text('Записей нет'))
                     : Card(child: _buildTable(h, records)),
           ),
+        ],
+      ),
+    );
+  }
+
+  /// Строка состояния синхронизации с файловым сервером.
+  Widget _buildSyncStatus(HistoryProvider h) {
+    final sync = h.lastSync;
+    final at = h.lastSyncAt;
+
+    final (IconData icon, Color color, String text) = switch (sync) {
+      null => (Icons.cloud_queue, Colors.grey, 'Синхронизация не выполнялась'),
+      SyncResult(storeError: final String e) =>
+        (Icons.cloud_off, Colors.orange, 'Нет связи с файловым сервером'),
+      _ when sync.hasChanges =>
+        (Icons.cloud_done, Colors.green, sync.summary),
+      _ => (Icons.cloud_done, Colors.green, 'Данные актуальны'),
+    };
+
+    final time = at == null ? '' : ' · ${formatDateTime(at)}';
+    final hint = sync?.storeError;
+
+    return Tooltip(
+      message: hint ?? 'История на файловом сервере',
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 16, color: color),
+          const SizedBox(width: 4),
+          Text('$text$time',
+              style: TextStyle(fontSize: 12, color: color)),
         ],
       ),
     );
