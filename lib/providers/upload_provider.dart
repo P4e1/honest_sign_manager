@@ -63,6 +63,13 @@ class UploadProvider extends ChangeNotifier {
   String? progressText;
   UploadOutcome? outcome;
 
+  /// Товар был выбран автоматически по названию из файла — нужен для подсказки.
+  bool productAutoSelected = false;
+
+  /// Предупреждение о расхождении: название в файле не совпало с товаром
+  /// в справочнике. Показывается рядом с кнопкой сброса файла.
+  String? nameMismatchWarning;
+
   List<String> get codes => parsed?.codes ?? const [];
 
   TerminalAddress? get terminal => TerminalAddress.tryParse(terminalUrl);
@@ -104,6 +111,8 @@ class UploadProvider extends ChangeNotifier {
   void setProduct(Product? product) {
     if (product == selectedProduct) return;
     selectedProduct = product;
+    productAutoSelected = false;
+    nameMismatchWarning = null;
     notifyListeners();
   }
 
@@ -120,6 +129,8 @@ class UploadProvider extends ChangeNotifier {
   void clearFile() {
     fileName = null;
     parsed = null;
+    nameMismatchWarning = null;
+    productAutoSelected = false;
     notifyListeners();
   }
 
@@ -132,15 +143,74 @@ class UploadProvider extends ChangeNotifier {
       final result = await ExcelService.readCodes(path);
       fileName = name;
       parsed = result;
+
+      // Подсказка из файла (F2) — чтобы человек не выбрал не тот товар.
+      _autoSelectByName(result.productNameFromFile);
+
       return null;
     } catch (e) {
       fileName = null;
       parsed = null;
+      nameMismatchWarning = null;
       return 'Не удалось прочитать файл: ${e is FormatException ? e.message : e}';
     } finally {
       isReadingFile = false;
       notifyListeners();
     }
+  }
+
+  /// Ищет товар по названию из файла и подставляет его, если нашёл
+  /// однозначное совпадение. Иначе оставляет выбор человеку и предупреждает.
+  void _autoSelectByName(String? nameFromFile) {
+    nameMismatchWarning = null;
+    productAutoSelected = false;
+
+    if (nameFromFile == null || nameFromFile.trim().isEmpty) return;
+
+    final key = normalizeProductName(nameFromFile);
+    if (key.isEmpty) return;
+
+    final matches = products
+        .where((p) => normalizeProductName(p.name) == key)
+        .toList();
+
+    if (matches.length == 1) {
+      selectedProduct = matches.single;
+      productAutoSelected = true;
+      return;
+    }
+
+    // Совпадения нет — не подставляем, но запоминаем, с чем сверять.
+    if (matches.isEmpty) {
+      final partial = products
+          .where((p) => normalizeProductName(p.name).contains(key))
+          .toList();
+      if (partial.length == 1) {
+        selectedProduct = partial.single;
+        productAutoSelected = true;
+        return;
+      }
+    }
+  }
+
+  /// Проверяет, совпадает ли выбранный товар с названием из файла.
+  /// Возвращает текст предупреждения или null, если всё в порядке.
+  String? get checkSelectedProductAgainstFile {
+    final fromFile = parsed?.productNameFromFile;
+    final chosen = selectedProduct;
+
+    if (fromFile == null || fromFile.isEmpty) return null;
+    if (chosen == null) return null;
+
+    final fileKey = normalizeProductName(fromFile);
+    final chosenKey = normalizeProductName(chosen.name);
+
+    if (fileKey == chosenKey) return null;
+    if (chosenKey.contains(fileKey) || fileKey.contains(chosenKey)) return null;
+
+    nameMismatchWarning =
+        'В файле товар «$fromFile», а выбран «${chosen.label}»';
+    return nameMismatchWarning;
   }
 
   // ------------------------------ дубликаты ------------------------------

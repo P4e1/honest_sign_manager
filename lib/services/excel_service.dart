@@ -12,18 +12,44 @@ class ExcelService {
   /// Первая строка — заголовок.
   static const headerRows = 1;
 
+  /// Ячейка с наименованием товара: F2 (столбец 6, строка 2).
+  static const productNameCell = (column: 5, row: 2);
+
+  /// Ячейка с ID товара из 1С: E2 (столбец 5, строка 2).
+  static const productIdCell = (column: 4, row: 2);
+
+  /// Читает коды из столбца B и подпись товара из F2.
   static Future<CodeParseResult> readCodes(String path) async {
     final bytes = await File(path).readAsBytes();
     final sheet = XlsxReader.readFirstSheet(bytes);
-    final col = XlsxReader.columnIndexOf(codesColumn);
 
+    final col = XlsxReader.columnIndexOf(codesColumn);
     final values = <int, String>{};
     sheet.forEach((rowNum, cells) {
       if (rowNum <= headerRows) return;
       final v = cells[col];
       if (v != null) values[rowNum] = v;
     });
-    return CodeProcessor.parse(values);
+
+    final parsed = CodeProcessor.parse(values);
+
+    return CodeParseResult(
+      codes: parsed.codes,
+      duplicatesInFile: parsed.duplicatesInFile,
+      errors: parsed.errors,
+      productNameFromFile:
+          _cellText(sheet, productNameCell.column, productNameCell.row),
+      productIdFromFile:
+          _cellText(sheet, productIdCell.column, productIdCell.row),
+    );
+  }
+
+  /// Текст ячейки по индексу столбца (с нуля) и номеру строки (с единицы).
+  static String? _cellText(
+      Map<int, Map<int, String>> sheet, int column, int row) {
+    final value = sheet[row]?[column]?.trim();
+    if (value == null || value.isEmpty) return null;
+    return value;
   }
 
   /// Справочник: столбец A — ID (1…99999999), столбец B — наименование.

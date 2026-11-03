@@ -54,6 +54,48 @@ class _UploadScreenState extends State<UploadScreen> {
 
   Future<void> _upload() async {
     final provider = context.read<UploadProvider>();
+
+    // Сверка товара из файла с выбранным — последний шанс заметить ошибку.
+    final mismatch = provider.checkSelectedProductAgainstFile;
+    if (mismatch != null) {
+      final proceed = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          icon: const Icon(Icons.report_problem_outlined,
+              color: Colors.red, size: 36),
+          title: const Text('Товар не совпадает с файлом'),
+          content: SizedBox(
+            width: 480,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(mismatch),
+                const SizedBox(height: 12),
+                const Text(
+                  'Коды будут привязаны к выбранному товару. Если файл '
+                  'и товар не про один и тот же продукт — выгружать нельзя: '
+                  'коды попадут не на тот товар, и исправить это будет сложно.',
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Исправить выбор'),
+            ),
+            TextButton(
+              style: TextButton.styleFrom(foregroundColor: Colors.red),
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Всё равно выгрузить'),
+            ),
+          ],
+        ),
+      );
+      if (proceed != true || !mounted) return;
+    }
+
     final dup = await provider.checkDuplicates();
     if (!mounted) return;
 
@@ -183,6 +225,7 @@ class _UploadScreenState extends State<UploadScreen> {
           Wrap(
             spacing: 8,
             runSpacing: 8,
+            crossAxisAlignment: WrapCrossAlignment.center,
             children: [
               StatChip(
                   icon: Icons.check_circle,
@@ -198,6 +241,14 @@ class _UploadScreenState extends State<UploadScreen> {
                     icon: Icons.error,
                     color: Colors.red,
                     text: 'Ошибок формата: ${parsed.errors.length}'),
+              // Наименование товара из ячейки F2 файла — слева от кнопки сброса.
+              if (parsed.hasProductInfo)
+                _ProductFromFileBadge(
+                  name: parsed.productNameFromFile!,
+                  idFromFile: parsed.productIdFromFile,
+                  selected: p.selectedProduct,
+                  autoSelected: p.productAutoSelected,
+                ),
               ActionChip(
                 avatar: const Icon(Icons.close, size: 18),
                 label: const Text('Сбросить файл'),
@@ -228,6 +279,105 @@ class _UploadScreenState extends State<UploadScreen> {
           ],
         ],
       ],
+    );
+  }
+}
+
+/// Плашка с наименованием товара из файла (ячейка F2).
+///
+/// Нужна, чтобы человек глазами сверил: тот ли товар в файле, что он
+/// собирается выгружать. Если выбор не совпал — плашка краснеет
+/// и прямо говорит, в чём расхождение.
+class _ProductFromFileBadge extends StatelessWidget {
+  final String name;
+  final String? idFromFile;
+  final Product? selected;
+  final bool autoSelected;
+
+  const _ProductFromFileBadge({
+    required this.name,
+    required this.selected,
+    required this.autoSelected,
+    this.idFromFile,
+  });
+
+  /// Совпадает ли выбранный товар с тем, что в файле.
+  bool get _matches {
+    final chosen = selected;
+    if (chosen == null) return false;
+
+    final a = normalizeProductName(name);
+    final b = normalizeProductName(chosen.name);
+    if (a == b) return true;
+    return a.contains(b) || b.contains(a);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final chosen = selected;
+    final ok = _matches;
+
+    final Color color;
+    final IconData icon;
+    final String secondary;
+
+    if (chosen == null) {
+      color = Colors.orange;
+      icon = Icons.help_outline;
+      secondary = 'Товар ещё не выбран';
+    } else if (ok) {
+      color = Colors.green;
+      icon = Icons.verified_outlined;
+      secondary = autoSelected
+          ? 'Подставлен автоматически: ${chosen.label}'
+          : 'Совпадает с выбранным: ${chosen.label}';
+    } else {
+      color = Colors.red;
+      icon = Icons.report_problem_outlined;
+      secondary = 'ВНИМАНИЕ: выбран другой товар — ${chosen.label}';
+    }
+
+    return Tooltip(
+      message: idFromFile == null
+          ? 'Наименование из ячейки F2 файла'
+          : 'Наименование из ячейки F2 файла\n'
+              'ID из 1С (ячейка E2): $idFromFile',
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        decoration: BoxDecoration(
+          color: color.withAlpha(20),
+          border: Border.all(color: color.withAlpha(120)),
+          borderRadius: BorderRadius.circular(20),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 18, color: color),
+            const SizedBox(width: 8),
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  'В файле: $name',
+                  style: TextStyle(
+                    color: color,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                Text(
+                  secondary,
+                  style: TextStyle(
+                    color: ok ? scheme.onSurfaceVariant : color,
+                    fontSize: 11,
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
@@ -328,7 +478,8 @@ class _ProductField extends StatelessWidget {
             enabled: !p.isUploading,
             onSubmitted: (_) => onSubmit(),
             onChanged: (text) {
-              if (p.selectedProduct != null && text != p.selectedProduct!.label) {
+              if (p.selectedProduct != null &&
+                  text != p.selectedProduct!.label) {
                 p.setProduct(null);
               }
             },
@@ -348,7 +499,8 @@ class _ProductField extends StatelessWidget {
           controlAffinity: ListTileControlAffinity.leading,
           value: p.showHiddenProducts,
           onChanged: (v) => p.setShowHiddenProducts(v ?? false),
-          title: const Text('Показывать удалённые и дубликаты (#удалено#, #дубликат#)'),
+          title: const Text(
+              'Показывать удалённые и дубликаты (#удалено#, #дубликат#)'),
         ),
       ],
     );
@@ -390,7 +542,8 @@ class _DuplicatesDialog extends StatelessWidget {
                     ListTile(
                       dense: true,
                       leading: const Icon(Icons.inventory),
-                      title: Text('Запись №${g.record.id} — ${g.record.productLabel}'),
+                      title:
+                          Text('Запись №${g.record.id} — ${g.record.productLabel}'),
                       subtitle: Text(
                           '${formatDateTime(g.record.uploadedAt)} · ${g.record.fileName} · '
                           'совпадает кодов: ${g.count}'),

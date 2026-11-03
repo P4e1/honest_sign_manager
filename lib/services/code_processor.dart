@@ -11,11 +11,47 @@ class CodeParseResult {
   /// Ошибки формата: «Строка 15: ...».
   final List<String> errors;
 
+  /// Наименование товара из ячейки F2 (R2C6) — подпись из 1С.
+  /// Нужно для сверки глазами: помогает заметить, что выбран не тот товар.
+  final String? productNameFromFile;
+
+  /// ID товара из ячейки E2 (R2C5). В выгрузках 1С это внутренний
+  /// идентификатор, он не совпадает с ID справочника — только для справки.
+  final String? productIdFromFile;
+
   const CodeParseResult({
     required this.codes,
     required this.duplicatesInFile,
     required this.errors,
+    this.productNameFromFile,
+    this.productIdFromFile,
   });
+
+  /// Есть что показать пользователю для сверки.
+  bool get hasProductInfo =>
+      (productNameFromFile != null && productNameFromFile!.isNotEmpty);
+}
+
+/// Сравнение названий товаров «по-человечески»: без кавычек, знаков
+/// препинания, лишних пробелов и регистра.
+///
+/// «Колбаса Ливерная «Нежная»» и «Колбаса Ливерная Нежная» дают один ключ.
+/// Всё, что не буква и не цифра, считается разделителем.
+String normalizeProductName(String value) {
+  final buffer = StringBuffer();
+  for (final rune in value.toLowerCase().runes) {
+    final ch = String.fromCharCode(rune);
+    final isLetter = RegExp(r'[a-zа-яё]', caseSensitive: false)
+        .hasMatch(ch);
+    final isDigit = rune >= 0x30 && rune <= 0x39;
+    buffer.write(isLetter || isDigit ? ch : ' ');
+  }
+
+  return buffer
+      .toString()
+      .split(RegExp(r'\s+'))
+      .where((w) => w.isNotEmpty)
+      .join(' ');
 }
 
 class CodeProcessor {
