@@ -52,7 +52,11 @@ class _RecordDetailsDialogState extends State<RecordDetailsDialog> {
         children: [
           Text('Запись №${r.id}'),
           const SizedBox(width: 12),
-          StatusBadge(loaded: r.isLoaded, text: r.status),
+          StatusBadge(
+            loaded: r.isLoaded,
+            withdrawn: r.isWithdrawn,
+            text: r.status,
+          ),
         ],
       ),
       content: SizedBox(

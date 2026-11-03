@@ -232,6 +232,73 @@ class DatabaseService {
     return rows.isEmpty ? null : MarkingCode.fromMap(rows.first);
   }
 
+  /// Все коды, загруженные на [terminalKey] в записях «Загружено».
+  /// Используется изъятием кодов с терминала.
+  Future<List<MarkingCode>> getLoadedCodesForTerminal(
+      String terminalKey) async {
+    final rows = await _db.rawQuery('''
+      SELECT c.* FROM codes c
+      JOIN upload_records r ON r.id = c.record_id
+      WHERE c.terminal_key = ?
+        AND r.status = ?
+      ORDER BY c.id
+    ''', [terminalKey, RecordStatus.loaded]);
+    return rows.map(MarkingCode.fromMap).toList();
+  }
+
+  Future<List<UploadRecord>> getRecordsByStoreIds(
+      Set<String> storeIds) async {
+    if (storeIds.isEmpty) return [];
+    final list = storeIds.toList();
+    const chunk = 400;
+    final result = <UploadRecord>[];
+    for (var i = 0; i < list.length; i += chunk) {
+      final part = list.sublist(
+          i, (i + chunk < list.length) ? i + chunk : list.length);
+      final ph = List.filled(part.length, '?').join(',');
+      final rows = await _db.query('upload_records',
+          where: 'store_id IN ($ph)', whereArgs: part);
+      result.addAll(rows.map(UploadRecord.fromMap));
+    }
+    return result;
+  }
+
+  /// Помечает записи как изъятые: коды сняты с терминала во временный файл.
+  Future<void> markWithdrawn(Set<String> storeIds) async {
+    if (storeIds.isEmpty) return;
+    final list = storeIds.toList();
+    const chunk = 400;
+    for (var i = 0; i < list.length; i += chunk) {
+      final part = list.sublist(
+          i, (i + chunk < list.length) ? i + chunk : list.length);
+      final ph = List.filled(part.length, '?').join(',');
+      await _db.update(
+        'upload_records',
+        {'status': RecordStatus.withdrawn},
+        where: 'store_id IN ($ph) AND status = ?',
+        whereArgs: [...part, RecordStatus.loaded],
+      );
+    }
+  }
+
+  /// Возвращает коды изъятия в рабочий статус.
+  Future<void> markRestored(Set<String> storeIds) async {
+    if (storeIds.isEmpty) return;
+    final list = storeIds.toList();
+    const chunk = 400;
+    for (var i = 0; i < list.length; i += chunk) {
+      final part = list.sublist(
+          i, (i + chunk < list.length) ? i + chunk : list.length);
+      final ph = List.filled(part.length, '?').join(',');
+      await _db.update(
+        'upload_records',
+        {'status': RecordStatus.loaded},
+        where: 'store_id IN ($ph) AND status = ?',
+        whereArgs: [...part, RecordStatus.withdrawn],
+      );
+    }
+  }
+
   /// Все коды, загруженные на [terminalKey] по товару [productId]
   /// в записях со статусом «Загружено». Используется разделом «Остатки».
   Future<List<MarkingCode>> getLoadedCodesForProduct(

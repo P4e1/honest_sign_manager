@@ -37,8 +37,27 @@ class LabelingExporter {
   }) {
     final sheets = <XlsxSheet>[
       _summarySheet(product, terminal, report, period, generatedAt),
-      _labelingSheet(report),
-      _notPrintedSheet(report),
+      _codesSheet(
+        title: 'Напечатаны',
+        note: 'Статус Ready — коды нанесены на товар',
+        codes: report.printed,
+      ),
+      _codesSheet(
+        title: 'Не напечатаны',
+        note: 'Загружены через приложение, но нанесения нет',
+        codes: const [],
+        rawOnly: report.notPrintedCodes,
+      ),
+      _codesSheet(
+        title: 'Отменены',
+        note: 'Статус Cancelled — печать отменена',
+        codes: report.cancelled,
+      ),
+      _codesSheet(
+        title: 'В обработке',
+        note: 'Статус Locked — запись ещё обрабатывается станцией',
+        codes: report.locked,
+      ),
     ];
     return XlsxWriter.build(sheets);
   }
@@ -114,10 +133,22 @@ class LabelingExporter {
     );
   }
 
-  // ─── Лист 2: напечатанные ───────────────────────────────────────────────────
+  // ─── Листы с кодами по статусам ─────────────────────────────────────────────
 
-  static XlsxSheet _labelingSheet(StockReport report) {
+  /// Лист со списком кодов в формате ЧЗ.
+  ///
+  /// [codes] — записи терминала (для напечатанных/отменённых/в обработке),
+  /// [rawOnly] — «голые» коды из нашей истории (для ненапечатанных).
+  static XlsxSheet _codesSheet({
+    required String title,
+    required String note,
+    required List<LabelingRecord> codes,
+    List<String> rawOnly = const [],
+  }) {
     final rows = <List<Object?>>[
+      [title],
+      [note],
+      [],
       [
         '№',
         'Код ЧЗ',
@@ -136,17 +167,18 @@ class LabelingExporter {
       ],
     ];
 
-    final records = [...report.labeling]
+    final sorted = [...codes]
       ..sort((a, b) {
         final da = a.printedAt ?? a.createdAt ?? DateTime(1970);
         final db = b.printedAt ?? b.createdAt ?? DateTime(1970);
         return da.compareTo(db);
       });
 
-    for (var i = 0; i < records.length; i++) {
-      final r = records[i];
+    var n = 0;
+    for (final r in sorted) {
+      n++;
       rows.add([
-        i + 1,
+        n,
         r.codeRaw,
         r.codeBase64,
         r.statusLabel,
@@ -163,39 +195,51 @@ class LabelingExporter {
       ]);
     }
 
-    return XlsxSheet(
-      'История маркировки',
-      rows,
-      columnWidths: [6, 30, 44, 16, 20, 20, 20, 10, 18, 12, 11, 12, 8, 9],
-    );
-  }
-
-  // ─── Лист 3: не напечатанные ────────────────────────────────────────────────
-
-  static XlsxSheet _notPrintedSheet(StockReport report) {
-    final notPrinted = report.notPrintedCodes;
-    final rows = <List<Object?>>[
-      ['№', 'Код ЧЗ', 'Base64', 'Статус'],
-    ];
-
-    for (var i = 0; i < notPrinted.length; i++) {
-      final raw = notPrinted[i];
+    for (final raw in rawOnly) {
+      n++;
       rows.add([
-        i + 1,
+        n,
         raw,
         _toBase64(raw),
         'Загружен, не напечатан',
+        '',
+        '',
+        '',
+        '',
+        '',
+        '',
+        '',
+        '',
+        '',
+        '',
       ]);
     }
 
-    if (notPrinted.isEmpty) {
-      rows.add(['', 'Нет загруженных, но не напечатанных кодов', '', '']);
+    if (n == 0) {
+      rows.add([
+        '',
+        'Нет кодов в этом статусе за выбранный период',
+        '',
+        '',
+        '',
+        '',
+        '',
+        '',
+        '',
+        '',
+        '',
+        '',
+        '',
+        '',
+      ]);
     }
 
     return XlsxSheet(
-      'Не напечатаны',
+      title,
       rows,
-      columnWidths: [6, 30, 44, 26],
+      columnWidths: [6, 30, 44, 24, 20, 20, 20, 10, 18, 12, 11, 12, 8, 9],
+      // Первые три строки — заголовок листа и пояснение, а не шапка таблицы.
+      headerRow: false,
     );
   }
 

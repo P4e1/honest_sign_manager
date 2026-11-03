@@ -83,14 +83,27 @@ class StatChip extends StatelessWidget {
 }
 
 /// Цветной бейдж статуса записи.
+///
+/// Цвета: загружено — зелёный, изъято — оранжевый, удалено — серый.
 class StatusBadge extends StatelessWidget {
   final bool loaded;
+  final bool withdrawn;
   final String text;
-  const StatusBadge({super.key, required this.loaded, required this.text});
+
+  const StatusBadge({
+    super.key,
+    required this.loaded,
+    required this.text,
+    this.withdrawn = false,
+  });
 
   @override
   Widget build(BuildContext context) {
-    final color = loaded ? Colors.green : Colors.grey;
+    final MaterialColor color = loaded
+        ? Colors.green
+        : withdrawn
+            ? Colors.orange
+            : Colors.grey;
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
       decoration: BoxDecoration(

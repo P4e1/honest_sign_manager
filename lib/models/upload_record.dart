@@ -2,6 +2,10 @@
 class RecordStatus {
   static const loaded = 'Загружено';
   static const deleted = 'Удалён';
+
+  /// Коды сняты с терминала во временный файл (изъятие).
+  /// Запись остаётся в истории, коды можно вернуть.
+  static const withdrawn = 'Изъят';
 }
 
 /// Запись истории = одна выгрузка файла на терминал.
@@ -55,6 +59,10 @@ class UploadRecord {
 
   bool get isLoaded => status == RecordStatus.loaded;
   bool get isDeleted => status == RecordStatus.deleted;
+  bool get isWithdrawn => status == RecordStatus.withdrawn;
+
+  /// Коды записи лежат в файле изъятия, а не на терминале.
+  bool get isOffTerminal => isWithdrawn || isDeleted;
 
   String get productLabel => '$productId — $productName';
 

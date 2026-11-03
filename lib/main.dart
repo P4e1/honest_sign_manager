@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import 'app.dart';
 import 'providers/history_provider.dart';
 import 'providers/stock_provider.dart';
+import 'providers/vault_provider.dart';
 import 'providers/upload_provider.dart';
 import 'services/database_service.dart';
 import 'services/settings_service.dart';
@@ -25,6 +26,7 @@ Future<void> main() async {
         ChangeNotifierProvider(create: (_) => UploadProvider(db, settings)..init()),
         ChangeNotifierProvider(create: (_) => HistoryProvider(db, settings)..load()),
         ChangeNotifierProvider(create: (_) => StockProvider(db, settings)),
+        ChangeNotifierProvider(create: (_) => VaultProvider(db, settings)),
       ],
       child: const MyApp(),
     ),

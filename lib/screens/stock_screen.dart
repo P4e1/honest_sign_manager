@@ -1,11 +1,14 @@
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../models/labeling_record.dart';
 import '../models/product.dart';
 import '../providers/stock_provider.dart';
 import '../utils/terminal_address.dart';
+import '../providers/vault_provider.dart';
+import 'vault_panel.dart';
 import 'widgets.dart';
 
 class StockScreen extends StatefulWidget {
@@ -16,6 +19,14 @@ class StockScreen extends StatefulWidget {
 }
 
 class _StockScreenState extends State<StockScreen> {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) context.read<VaultProvider>().load();
+    });
+  }
+
   Future<void> _load() async {
     await context.read<StockProvider>().load();
   }
@@ -97,6 +108,7 @@ class _StockScreenState extends State<StockScreen> {
           const SizedBox(height: 24),
           _buildReport(context, p),
         ],
+        VaultPanel(terminalUrl: p.terminalUrl),
       ],
     );
   }
@@ -471,8 +483,8 @@ class _StatCard extends StatelessWidget {
   }
 }
 
-/// Раскрывающийся список кодов с копированием.
-class _ExpandableList extends StatelessWidget {
+/// Раскрывающийся список кодов с поиском и копированием.
+class _ExpandableList extends StatefulWidget {
   final String title;
   final IconData icon;
   final Color color;
@@ -486,24 +498,114 @@ class _ExpandableList extends StatelessWidget {
   });
 
   @override
+  State<_ExpandableList> createState() => _ExpandableListState();
+}
+
+class _ExpandableListState extends State<_ExpandableList> {
+  final _searchCtrl = TextEditingController();
+  String _query = '';
+  bool _expanded = false;
+
+  @override
+  void dispose() {
+    _searchCtrl.dispose();
+    super.dispose();
+  }
+
+  /// Ищем по вхождению в любом месте кода: часто помнят только хвост
+  /// серийного номера, а не весь код целиком.
+  List<String> get _filtered {
+    final q = _query.trim().toLowerCase();
+    if (q.isEmpty) return widget.codes;
+    return widget.codes
+        .where((c) => c.toLowerCase().contains(q))
+        .toList();
+  }
+
+  Future<void> _copy(List<String> codes) async {
+    await Clipboard.setData(ClipboardData(text: codes.join('\n')));
+    if (mounted) showSnack(context, 'Скопировано кодов: ${codes.length}');
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final filtered = _filtered;
+    final hasQuery = _query.trim().isNotEmpty;
+
     return Card(
       margin: EdgeInsets.zero,
       child: ExpansionTile(
-        leading: Icon(icon, color: color),
-        title: Text(title),
+        leading: Icon(widget.icon, color: widget.color),
+        title: Text(widget.title),
+        subtitle: hasQuery
+            ? Text('Найдено: ${filtered.length} из ${widget.codes.length}')
+            : null,
+        initiallyExpanded: _expanded,
+        onExpansionChanged: (v) => setState(() => _expanded = v),
         children: [
-          Container(
-            height: 260,
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            child: ListView.builder(
-              itemCount: codes.length,
-              itemBuilder: (_, i) => SelectableText(
-                '${(i + 1).toString().padLeft(5)}.  ${codes[i]}',
-                style: monoStyle,
-              ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+            child: Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _searchCtrl,
+                    onChanged: (v) => setState(() => _query = v),
+                    decoration: InputDecoration(
+                      isDense: true,
+                      border: const OutlineInputBorder(),
+                      prefixIcon: const Icon(Icons.search, size: 20),
+                      hintText: 'Поиск кода — можно ввести часть',
+                      suffixIcon: hasQuery
+                          ? IconButton(
+                              icon: const Icon(Icons.clear, size: 20),
+                              tooltip: 'Сбросить',
+                              onPressed: () {
+                                _searchCtrl.clear();
+                                setState(() => _query = '');
+                              },
+                            )
+                          : null,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                IconButton(
+                  tooltip: hasQuery
+                      ? 'Копировать найденные (${filtered.length})'
+                      : 'Копировать все (${widget.codes.length})',
+                  onPressed: filtered.isEmpty ? null : () => _copy(filtered),
+                  icon: const Icon(Icons.copy),
+                ),
+              ],
             ),
           ),
+          if (filtered.isEmpty)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  'Код не найден среди ${widget.codes.length} записей',
+                  style: const TextStyle(color: Colors.orange),
+                ),
+              ),
+            )
+          else
+            Container(
+              height: 280,
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: ListView.builder(
+                itemCount: filtered.length,
+                itemBuilder: (_, i) => Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 2),
+                  child: SelectableText(
+                    '${(i + 1).toString().padLeft(5)}.  ${filtered[i]}',
+                    style: monoStyle,
+                  ),
+                ),
+              ),
+            ),
           const SizedBox(height: 8),
         ],
       ),

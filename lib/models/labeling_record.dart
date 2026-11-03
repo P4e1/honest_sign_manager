@@ -169,6 +169,16 @@ class StockReport {
   Set<String> get printedCodes =>
       {for (final r in printed) r.codeRaw};
 
+  Set<String> get cancelledCodes =>
+      {for (final r in cancelled) r.codeRaw};
+
+  Set<String> get lockedCodes =>
+      {for (final r in locked) r.codeRaw};
+
+  /// Напечатанные коды, которых нет среди отменённых — гарантированно нанесены.
+  Set<String> get effectivePrintedCodes =>
+      printedCodes.difference(cancelledCodes);
+
   /// Загруженные нами коды, которых нет среди напечатанных.
   List<String> get notPrintedCodes {
     final printedSet = printedCodes;

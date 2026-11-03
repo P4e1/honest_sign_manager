@@ -175,7 +175,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
         SizedBox(
           width: 220,
           child: DropdownButtonFormField<String?>(
-            initialValue: h.terminalKey,
+            value: h.terminalKey,
             isExpanded: true,
             decoration: const InputDecoration(
                 isDense: true,
@@ -192,7 +192,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
         SizedBox(
           width: 320,
           child: DropdownButtonFormField<int?>(
-            initialValue: products.containsKey(h.productId) ? h.productId : null,
+            value: products.containsKey(h.productId) ? h.productId : null,
             isExpanded: true,
             decoration: const InputDecoration(
                 isDense: true,
@@ -213,7 +213,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
         SizedBox(
           width: 170,
           child: DropdownButtonFormField<String?>(
-            initialValue: h.status,
+            value: h.status,
             isExpanded: true,
             decoration: const InputDecoration(
                 isDense: true,
@@ -223,6 +223,9 @@ class _HistoryScreenState extends State<HistoryScreen> {
               DropdownMenuItem(value: null, child: Text('Все')),
               DropdownMenuItem(
                   value: RecordStatus.loaded, child: Text(RecordStatus.loaded)),
+              DropdownMenuItem(
+                  value: RecordStatus.withdrawn,
+                  child: Text(RecordStatus.withdrawn)),
               DropdownMenuItem(
                   value: RecordStatus.deleted,
                   child: Text(RecordStatus.deleted)),
@@ -287,7 +290,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
                   )),
                   DataCell(Text('${r.codesCount}')),
                   DataCell(Text('${r.httpStatus}')),
-                  DataCell(StatusBadge(loaded: r.isLoaded, text: r.status)),
+                  DataCell(_statusBadge(r)),
                   DataCell(_rowActions(h, r)),
                 ],
               ),
@@ -296,6 +299,12 @@ class _HistoryScreenState extends State<HistoryScreen> {
       ),
     );
   }
+
+  Widget _statusBadge(UploadRecord r) => StatusBadge(
+        loaded: r.isLoaded,
+        withdrawn: r.isWithdrawn,
+        text: r.status,
+      );
 
   Widget _rowActions(HistoryProvider h, UploadRecord r) {
     if (h.deletingId == r.id) {
