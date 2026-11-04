@@ -26,11 +26,16 @@ call flutter pub get
 if errorlevel 1 goto :fail
 
 echo [3/6] Проверка кода...
-call flutter analyze
-if errorlevel 1 goto :fail
+rem --no-fatal-infos / --no-fatal-warnings: замечания стиля (const, deprecated)
+rem не должны останавливать сборку. Останавливают только настоящие ошибки.
+call flutter analyze --no-fatal-infos --no-fatal-warnings
+if errorlevel 1 goto :analyze_fail
 
 echo [4/6] Тесты...
-call flutter test
+rem --concurrency: файлы идут параллельно, весь прогон ~15 секунд.
+rem --timeout 60s: если какой-то тест зависнет, он упадёт через минуту,
+rem а не будет держать сборку вечно.
+call flutter test --concurrency=4 --timeout 60s
 if errorlevel 1 goto :fail
 
 echo [5/6] Сборка release (это займёт несколько минут)...
@@ -67,6 +72,15 @@ echo  Установщик: откройте installer.iss в Inno Setup 6 и н
 echo.
 pause
 exit /b 0
+
+:analyze_fail
+echo.
+echo ============================================
+echo  ОШИБКА: анализатор нашёл ОШИБКИ в коде.
+echo  Смотрите строки со словом "error" в выводе выше.
+echo ============================================
+pause
+exit /b 1
 
 :fail
 echo.

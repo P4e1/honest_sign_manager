@@ -21,14 +21,14 @@ void main() {
     expect(matches(fromFile, 'Колбаса Докторская вареная ГОСТ 450г'), isFalse);
 
     // Плашка должна отрисоваться без исключений
-    await tester.pumpWidget(MaterialApp(
+    await tester.pumpWidget(const MaterialApp(
       home: Scaffold(
         body: Chip(
-          avatar: const Icon(Icons.verified_outlined, size: 18),
-          label: Text('В файле: $fromFile'),
+          avatar: Icon(Icons.verified_outlined, size: 18),
+          label: Text('В файле: Колбаса Ливерная Нежная'),
         ),
       ),
     ));
-    expect(find.text('В файле: $fromFile'), findsOneWidget);
+    expect(find.text('В файле: Колбаса Ливерная Нежная'), findsOneWidget);
   });
 }

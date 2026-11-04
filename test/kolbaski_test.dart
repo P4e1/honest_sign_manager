@@ -6,7 +6,7 @@ import 'package:honest_sign_manager/services/xlsx_reader.dart';
 
 void main() {
   test('Файл «Колбаски из печи» — F2 читается', () async {
-    final path = 'test/fixtures/kolbaski.xlsx';
+    const path = 'test/fixtures/kolbaski.xlsx';
 
     // Сначала сырой читатель: что он видит в строке 2
     final bytes = await File(path).readAsBytes();

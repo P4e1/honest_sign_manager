@@ -175,6 +175,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
         SizedBox(
           width: 220,
           child: DropdownButtonFormField<String?>(
+            // ignore: deprecated_member_use
             value: h.terminalKey,
             isExpanded: true,
             decoration: const InputDecoration(
@@ -192,6 +193,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
         SizedBox(
           width: 320,
           child: DropdownButtonFormField<int?>(
+            // ignore: deprecated_member_use
             value: products.containsKey(h.productId) ? h.productId : null,
             isExpanded: true,
             decoration: const InputDecoration(
@@ -213,6 +215,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
         SizedBox(
           width: 170,
           child: DropdownButtonFormField<String?>(
+            // ignore: deprecated_member_use
             value: h.status,
             isExpanded: true,
             decoration: const InputDecoration(
