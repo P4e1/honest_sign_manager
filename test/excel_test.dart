@@ -2,13 +2,27 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:honest_sign_manager/services/excel_service.dart';
 
 void main() {
-  test('Коды из примера', () async {
-    final r = await ExcelService.readCodes('test/fixtures/codes.xlsx');
-    // ignore: avoid_print
-    print('codes=${r.codes.length} dup=${r.duplicatesInFile} err=${r.errors}');
-    expect(r.codes.length, 100);
-    expect(r.codes.first, '0104697951542541215Se<Bg');
-    expect(r.errors, isEmpty);
+  group('Коды из файла выгрузки 1С', () {
+    test('читаются из столбца C вместе с серией и кодом проверки', () async {
+      final r = await ExcelService.readCodes('test/fixtures/codes.xlsx');
+
+      // ignore: avoid_print
+      print('codes=${r.codes.length} dup=${r.duplicatesInFile} '
+          'err=${r.errors} структуры=${r.structureSummary}');
+
+      expect(r.codes.length, 100);
+      expect(r.errors, isEmpty);
+
+      // Из C приходит полная строка DataMatrix: КИ + GS + код из AI 93.
+      expect(r.codes.first, '0104697951542541215Se<Bg\x1D93sRVG');
+      // Первая часть содержит два AI: 01 (GTIN) и 21 (серийный номер).
+      expect(r.structureSummary, {'01+21+93': 100});
+    });
+
+    test('подпись товара из F2 по-прежнему читается', () async {
+      final r = await ExcelService.readCodes('test/fixtures/codes.xlsx');
+      expect(r.productNameFromFile, isNotNull);
+    });
   });
 
   test('Справочник товаров', () async {
