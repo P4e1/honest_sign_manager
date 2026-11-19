@@ -7,6 +7,7 @@ import '../models/product.dart';
 import '../providers/history_provider.dart';
 import '../providers/upload_provider.dart';
 import '../services/code_processor.dart';
+import '../services/terminal_api.dart';
 import '../utils/terminal_address.dart';
 import 'widgets.dart';
 
@@ -401,9 +402,35 @@ class _TerminalFieldState extends State<_TerminalField> {
     super.dispose();
   }
 
+  bool _checking = false;
+  String? _checkMessage;
+  bool _checkOk = false;
+
   void _set(String value) {
     _ctrl.text = value;
+    _onChanged(value);
+  }
+
+  void _onChanged(String value) {
+    if (_checkMessage != null) setState(() => _checkMessage = null);
     widget.provider.setTerminalUrl(value);
+  }
+
+  Future<void> _check(TerminalAddress terminal) async {
+    setState(() {
+      _checking = true;
+      _checkMessage = null;
+    });
+    final res = await TerminalApi.ping(terminal);
+    if (!mounted) return;
+    setState(() {
+      _checking = false;
+      _checkOk = res.ok;
+      _checkMessage = res.ok
+          ? 'Терминал в сети (HTTP ${res.statusCode})'
+              '${res.statusCode == 404 ? ' — путь /api, возможно, указан неверно' : ''}'
+          : (res.error ?? 'Нет ответа от терминала');
+    });
   }
 
   @override
@@ -412,10 +439,10 @@ class _TerminalFieldState extends State<_TerminalField> {
     final parsed = TerminalAddress.tryParse(p.terminalUrl);
     final showError = p.terminalUrl.trim().isNotEmpty && parsed == null;
 
-    return TextField(
+    final field = TextField(
       controller: _ctrl,
       enabled: !p.isUploading,
-      onChanged: p.setTerminalUrl,
+      onChanged: _onChanged,
       decoration: InputDecoration(
         border: const OutlineInputBorder(),
         labelText: 'Адрес терминала',
@@ -434,6 +461,40 @@ class _TerminalFieldState extends State<_TerminalField> {
           ],
         ),
       ),
+    );
+
+    final scheme = Theme.of(context).colorScheme;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        field,
+        const SizedBox(height: 8),
+        Row(
+          children: [
+            OutlinedButton.icon(
+              onPressed: parsed == null || _checking || p.isUploading
+                  ? null
+                  : () => _check(parsed),
+              icon: _checking
+                  ? const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2))
+                  : const Icon(Icons.wifi_tethering),
+              label: const Text('Проверить связь'),
+            ),
+            const SizedBox(width: 12),
+            if (_checkMessage != null)
+              Expanded(
+                child: Text(
+                  _checkMessage!,
+                  style: TextStyle(
+                      color: _checkOk ? Colors.green : scheme.error),
+                ),
+              ),
+          ],
+        ),
+      ],
     );
   }
 }

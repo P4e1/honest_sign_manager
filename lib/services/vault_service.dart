@@ -5,6 +5,8 @@ import 'dart:math' as math;
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
+import '../models/labeling_record.dart';
+import '../models/marking_code.dart';
 import '../models/vault.dart';
 import '../services/code_processor.dart';
 import '../services/database_service.dart';
@@ -67,6 +69,7 @@ class VaultService {
         final name = p.basename(e.path);
         if (!name.endsWith('.json')) continue;
         if (name.endsWith('.restored.json')) continue;
+        if (name.endsWith('.progress.json')) continue;
 
         try {
           final json = jsonDecode(await e.readAsString(encoding: utf8))
@@ -140,17 +143,95 @@ class VaultService {
     required TerminalAddress terminal,
     String? reason,
     void Function(int done, int total)? onProgress,
+    void Function(String text)? onStatus,
   }) async {
     final token = _settings.token;
     if (token.isEmpty) {
       return const VaultResult(false, 'Не задан токен авторизации');
     }
 
-    // 1. Собираем коды из истории этого терминала.
-    final codes = await _db.getLoadedCodesForTerminal(terminal.key);
-    if (codes.isEmpty) {
+    final api = TerminalApi(token);
+
+    // 1. Кандидаты — все коды из истории выгрузок этого терминала.
+    onStatus?.call('Чтение кодов из локальной базы…');
+    final dbWatch = Stopwatch()..start();
+    final loaded = await _db.getLoadedCodesForTerminal(terminal.key);
+    final known = await _db.getKnownCodesForTerminal(terminal.key);
+    dbWatch.stop();
+    onStatus?.call('Из базы прочитано кодов: ${loaded.length}, '
+        '${dbWatch.elapsedMilliseconds} мс');
+    if (known.isEmpty) {
       return const VaultResult(
           false, 'На этом терминале нет кодов в истории — снимать нечего');
+    }
+
+    // 2. Оставляем только то, что на терминале ещё не использовано.
+    //
+    // История выгрузок хранит всё, что мы когда-либо загрузили, а часть
+    // этих кодов терминал уже напечатал на товаре. Если снять и потом
+    // вернуть и их, напечатанные коды снова станут свободными — это и есть
+    // дубликаты. Поэтому всё, что есть в истории печати терминала
+    // (Ready, Locked, Cancelled), не трогаем. Если историю получить не
+    // удалось, изымать нельзя: иначе проверка бессмысленна.
+    final since = await _earliestUpload(known.map((c) => c.recordId).toSet());
+    final used = await _fetchUsedKi(
+      api,
+      terminal,
+      since: since,
+      onStatus: onStatus,
+    );
+    if (used.error != null) {
+      return VaultResult(
+        false,
+        'Изъятие не выполнено, ни один код не тронут: ${used.error}.\n'
+        'Без истории печати нельзя отличить свободные коды от уже '
+        'напечатанных, а возврат последних создал бы дубликаты.',
+      );
+    }
+
+    final seen = <String>{};
+    final codes = <MarkingCode>[];
+    var skippedDuplicates = 0;
+    for (final code in loaded) {
+      final ki = CodeProcessor.kiOf(code.raw);
+      if (used.ki!.contains(ki)) {
+        continue;
+      } else if (!seen.add(ki)) {
+        skippedDuplicates++;
+      } else {
+        codes.add(code);
+      }
+    }
+
+    // Напечатанные коды тоже нужно убрать с терминала: пока они там, он не даёт
+    // удалять товары (внешний ключ honest_sign_code → product). В файл они
+    // не пишутся и не возвращаются, поэтому дубликатов не будет.
+    final printedSeen = <String>{};
+    final printed = <MarkingCode>[];
+    for (final code in known) {
+      final ki = CodeProcessor.kiOf(code.raw);
+      if (used.ki!.contains(ki) && printedSeen.add(ki)) printed.add(code);
+    }
+
+    if (codes.isEmpty) {
+      if (printed.isEmpty) {
+        return const VaultResult(
+            false, 'Снимать нечего: на терминале нет кодов из истории выгрузок.');
+      }
+      final res = await _deletePrinted(api, terminal, printed, onStatus);
+      if (res.error != null) {
+        return VaultResult(
+          false,
+          'Свободных кодов нет. Напечатанные удалены не все: '
+          '${res.deleted} из ${printed.length} (${res.error}).\n'
+          'Повторите «Снять все коды в файл» — удалятся только оставшиеся.',
+        );
+      }
+      return VaultResult(
+        true,
+        'Свободных кодов на терминале нет — файл изъятия не создан.\n'
+        'Удалено напечатанных кодов: ${res.deleted}. Возвращать их не нужно.',
+      );
     }
 
     final records = {
@@ -188,7 +269,7 @@ class VaultService {
       codes: vaultCodes,
     );
 
-    // 2. Сначала сохраняем файл — до любого удаления.
+    // 3. Сначала сохраняем файл — до любого удаления.
     final localFile = File(
         p.join((await _localDir()).path, '$withdrawalId.json'));
     await localFile.writeAsString(
@@ -213,8 +294,7 @@ class VaultService {
       }
     }
 
-    // 3. Удаляем коды с терминала пачками.
-    final api = TerminalApi(token);
+    // 4. Удаляем коды с терминала пачками.
     final batchSize = _settings.batchSize;
     final batches = CodeProcessor.chunk(codes, batchSize);
 
@@ -247,13 +327,30 @@ class VaultService {
       onProgress?.call(deleted, codes.length);
     }
 
-    // 4. Помечаем записи как изъятые.
+    // 5. Помечаем записи как изъятые.
     await _db.markWithdrawn(
         vaultCodes.map((c) => c.storeId).where((s) => s.isNotEmpty).toSet());
 
+    final printedResult =
+        await _deletePrinted(api, terminal, printed, onStatus);
+
+    final skippedNote = StringBuffer();
+    if (printed.isNotEmpty) {
+      skippedNote.write('Удалено напечатанных: ${printedResult.deleted} из '
+          '${printed.length} — в файл не записаны и возвращены не будут.\n');
+    }
+    if (printedResult.error != null) {
+      skippedNote.write('Напечатанные удалены не все (${printedResult.error}). '
+          'Повторите «Снять все коды в файл» — удалятся только оставшиеся.\n');
+    }
+    if (skippedDuplicates > 0) {
+      skippedNote.write('Пропущено повторов в истории: $skippedDuplicates.\n');
+    }
+
     return VaultResult(
-      true,
+      printedResult.error == null,
       'Снято кодов: $deleted.\n'
+      '$skippedNote'
       'Файл: ${localFile.path}\n'
       '${sharedWritten ? 'Скопировано на файловый сервер.' : 'Файловый сервер недоступен — файл только локально.'}',
       Withdrawal(
@@ -276,6 +373,7 @@ class VaultService {
   Future<VaultResult> restore({
     required Withdrawal withdrawal,
     void Function(int done, int total)? onProgress,
+    void Function(String text)? onStatus,
   }) async {
     final token = _settings.token;
     if (token.isEmpty) {
@@ -298,6 +396,29 @@ class VaultService {
           'Файл изъятия не найден или пуст. Проверьте папку vault.');
     }
 
+    final api = TerminalApi(token);
+
+    // Файлы изъятия, созданные до исправления, могут содержать коды,
+    // которые к тому моменту уже были напечатаны. Возвращать их нельзя:
+    // они снова станут свободными и будут нанесены повторно. Поэтому
+    // сверяемся с историей печати терминала и при возврате.
+    final used = await _fetchUsedKi(
+      api,
+      terminal,
+      since: _earliestUploadOf(vault.codes),
+      onStatus: onStatus,
+    );
+    if (used.error != null) {
+      return VaultResult(
+        false,
+        'Возврат не выполнен, на терминал ничего не загружено: ${used.error}.\n'
+        'Без истории печати нельзя исключить уже напечатанные коды.',
+      );
+    }
+
+    // Коды, которые терминал принял при прошлой, прерванной попытке.
+    final alreadyAccepted = await _readProgress(withdrawal.withdrawalId);
+
     // Не возвращаем коды тех записей, которые успели удалить в истории.
     final records = await _db.getRecordsByStoreIds(
         vault.codes.map((c) => c.storeId).where((s) => s.isNotEmpty).toSet());
@@ -306,14 +427,32 @@ class VaultService {
         if (r.isDeleted) r.storeId,
     };
 
-    final toRestore = vault.codes
-        .where((c) => !deletedStoreIds.contains(c.storeId))
-        .toList();
-    final skipped = vault.codes.length - toRestore.length;
+    final seen = <String>{};
+    final toRestore = <VaultCode>[];
+    final acceptedBefore = <VaultCode>[];
+    var skippedDeleted = 0;
+    var skippedPrinted = 0;
+    var skippedDuplicates = 0;
+    for (final code in vault.codes) {
+      final ki = CodeProcessor.kiOf(code.raw);
+      if (deletedStoreIds.contains(code.storeId)) {
+        skippedDeleted++;
+      } else if (used.ki!.contains(ki)) {
+        skippedPrinted++;
+      } else if (!seen.add(ki)) {
+        skippedDuplicates++;
+      } else if (alreadyAccepted.contains(ki)) {
+        acceptedBefore.add(code);
+      } else {
+        toRestore.add(code);
+      }
+    }
 
-    if (toRestore.isEmpty) {
-      return const VaultResult(
-          false, 'Все записи этого изъятия удалены в истории — возвращать нечего');
+    if (toRestore.isEmpty && acceptedBefore.isEmpty) {
+      return VaultResult(
+          false,
+          'Возвращать нечего. Удалены в истории: $skippedDeleted, '
+          'уже напечатаны на терминале: $skippedPrinted.');
     }
 
     // Группируем по товару: терминал принимает productId в каждом элементе.
@@ -322,10 +461,9 @@ class VaultService {
       byProduct.putIfAbsent(code.productId, () => []).add(code);
     }
 
-    final api = TerminalApi(token);
     final batchSize = _settings.batchSize;
     var restored = 0;
-    final accepted = <VaultCode>[];
+    final accepted = <VaultCode>[...acceptedBefore];
 
     for (final entry in byProduct.entries) {
       if (entry.key <= 0) continue;
@@ -343,13 +481,20 @@ class VaultService {
           final detail = res.statusCode == null
               ? res.error
               : 'HTTP ${res.statusCode}: ${res.error}';
+          // Запоминаем принятое, чтобы повтор не загрузил эти коды второй раз.
+          await _writeProgress(
+            withdrawal.withdrawalId,
+            {for (final c in accepted) CodeProcessor.kiOf(c.raw)},
+          );
           return VaultResult(
             false,
             'Возврат прервался на товаре ${entry.key} '
             '(пачка ${i + 1} из ${batches.length}): $detail\n'
-            'Возвращено кодов: $restored из ${toRestore.length}.\n'
+            'Возвращено кодов: ${accepted.length} из '
+            '${toRestore.length + acceptedBefore.length}.\n'
             'Отметка о возврате не поставлена — можно повторить. '
-            'Учтите: уже возвращённые коды могут дать дубликат при повторе.',
+            'Принятые терминалом коды запомнены и при повторе '
+            'загружены не будут.',
           );
         }
 
@@ -360,19 +505,195 @@ class VaultService {
     }
 
     // Отметка о возврате — и локально, и на шаре.
-    await _writeRestoreMarker(withdrawal.withdrawalId, restored);
+    await _writeRestoreMarker(withdrawal.withdrawalId, accepted.length);
 
     final storeIds =
         accepted.map((c) => c.storeId).where((s) => s.isNotEmpty).toSet();
     await _db.markRestored(storeIds);
 
-    final skippedNote =
-        skipped > 0 ? '\nПропущено (записи удалены в истории): $skipped.' : '';
+    final skippedNote = StringBuffer();
+    if (skippedPrinted > 0) {
+      skippedNote.write('\nНе возвращено (уже напечатаны на терминале): '
+          '$skippedPrinted.');
+    }
+    if (skippedDeleted > 0) {
+      skippedNote.write('\nПропущено (записи удалены в истории): '
+          '$skippedDeleted.');
+    }
+    if (skippedDuplicates > 0) {
+      skippedNote.write('\nПропущено повторов в файле изъятия: '
+          '$skippedDuplicates.');
+    }
+    if (acceptedBefore.isNotEmpty) {
+      skippedNote.write('\nУже были приняты при прошлой попытке: '
+          '${acceptedBefore.length}.');
+    }
     return VaultResult(
       true,
-      'Возвращено кодов: $restored на терминал ${terminal.key}.$skippedNote',
+      'Возвращено кодов: ${accepted.length} на терминал '
+      '${terminal.key}.$skippedNote',
       withdrawal.copyWith(restoredAt: DateTime.now()),
     );
+  }
+
+  /// Самая ранняя выгрузка среди кодов. Напечатать код можно только после
+  /// загрузки на терминал, поэтому историю печати достаточно брать с этой даты.
+  /// Запас в сутки нужен на расхождение часов терминала и ПК.
+  Future<DateTime?> _earliestUpload(Set<int> recordIds) async {
+    if (recordIds.isEmpty) return null;
+    final records = await _db.getRecordsByIds(recordIds);
+    return _minWithMargin(records.map((r) => r.uploadedAt));
+  }
+
+  DateTime? _earliestUploadOf(List<VaultCode> codes) => _minWithMargin([
+        for (final c in codes)
+          if (DateTime.tryParse(c.uploadedAt) != null)
+            DateTime.parse(c.uploadedAt),
+      ]);
+
+  static DateTime? _minWithMargin(Iterable<DateTime> dates) {
+    DateTime? min;
+    for (final d in dates) {
+      if (min == null || d.isBefore(min)) min = d;
+    }
+    return min?.subtract(const Duration(days: 1));
+  }
+
+  Future<({int deleted, String? error})> _deletePrinted(
+    TerminalApi api,
+    TerminalAddress terminal,
+    List<MarkingCode> printed,
+    void Function(String text)? onStatus,
+  ) async {
+    var deleted = 0;
+    for (final batch in CodeProcessor.chunk(printed, _settings.batchSize)) {
+      onStatus?.call(
+          'Удаление напечатанных кодов: $deleted из ${printed.length}');
+      final res = await api.deleteCodes(
+        terminal: terminal,
+        base64Codes: batch.map((c) => c.base64).toList(),
+      );
+      if (!res.ok) {
+        final detail = res.statusCode == null
+            ? res.error
+            : 'HTTP ${res.statusCode}: ${res.error}';
+        return (deleted: deleted, error: detail);
+      }
+      await _db.markCodesPrintedDeleted(
+          [for (final c in batch) if (c.id != null) c.id!]);
+      deleted += batch.length;
+    }
+    return (deleted: deleted, error: null);
+  }
+
+  // ─── Сверка с историей печати ────────────────────────────────────────
+
+  static const _historyPageSize = 1000;
+  static const _historyMaxPages = 500;
+
+  /// Коды, которые терминал уже использовал при печати: статусы
+  /// Ready, Locked и Cancelled. Возвращает коды идентификации (до GS).
+  ///
+  /// При любой неопределённости — ошибка сети, неполная история,
+  /// неожиданный ответ — возвращается [error], а не частичный результат:
+  /// неполный список привёл бы к тому, что напечатанный код сочли бы
+  /// свободным.
+  Future<({Set<String>? ki, String? error})> _fetchUsedKi(
+    TerminalApi api,
+    TerminalAddress terminal, {
+    DateTime? since,
+    void Function(String text)? onStatus,
+  }) async {
+    onStatus?.call('Загрузка истории печати с терминала…');
+    final res = await api.getAllLabelingHistory(
+      terminal: terminal,
+      exportStatus: const ['Ready', 'Cancelled', 'Locked'],
+      createdAtAfter: since,
+      pageSize: _historyPageSize,
+      maxPages: _historyMaxPages,
+      onPage: (pageNumber, count, took) => onStatus?.call(
+          'История печати: стр. $pageNumber, +$count записей, '
+          '${took.inMilliseconds} мс'),
+    );
+
+    if (!res.ok) {
+      final detail = res.statusCode == null
+          ? res.error
+          : 'HTTP ${res.statusCode}: ${res.error}';
+      return (
+        ki: null,
+        error: 'не удалось получить историю печати с терминала ($detail)',
+      );
+    }
+
+    final data = res.data;
+    if (data is! List) {
+      return (
+        ki: null,
+        error: 'терминал вернул неожиданный ответ на запрос истории печати',
+      );
+    }
+    if (data.length >= _historyPageSize * _historyMaxPages) {
+      return (
+        ki: null,
+        error: 'история печати слишком велика и получена не полностью',
+      );
+    }
+
+    final ki = <String>{};
+    for (final item in data) {
+      if (item is! Map<String, dynamic>) continue;
+      final record = LabelingRecord.fromJson(item);
+      if (record == null) continue;
+      ki.add(CodeProcessor.kiOf(record.codeRaw));
+    }
+    return (ki: ki, error: null);
+  }
+
+  // ─── Прогресс возврата ───────────────────────────────────────────────
+
+  /// Коды (по КИ), которые терминал принял при прерванном возврате.
+  Future<Set<String>> _readProgress(String withdrawalId) async {
+    final result = <String>{};
+    final shared = _sharedDir();
+    final dirs = <Directory>[await _localDir(), if (shared != null) shared];
+
+    for (final dir in dirs) {
+      try {
+        final file = File(p.join(dir.path, '$withdrawalId.progress.json'));
+        if (!await file.exists()) continue;
+        final json = jsonDecode(await file.readAsString(encoding: utf8))
+            as Map<String, dynamic>;
+        for (final item in (json['acceptedKi'] as List<dynamic>? ?? const [])) {
+          if (item is String) result.add(item);
+        }
+      } catch (_) {
+        // Повреждённый файл прогресса пропускаем.
+      }
+    }
+    return result;
+  }
+
+  Future<void> _writeProgress(String withdrawalId, Set<String> acceptedKi) async {
+    final text = jsonEncode({
+      'withdrawalId': withdrawalId,
+      'updatedAt': DateTime.now().toIso8601String(),
+      'acceptedKi': acceptedKi.toList(),
+    });
+
+    try {
+      await File(p.join((await _localDir()).path, '$withdrawalId.progress.json'))
+          .writeAsString(text, encoding: utf8, flush: true);
+    } catch (_) {}
+
+    final shared = _sharedDir();
+    if (shared != null) {
+      try {
+        await shared.create(recursive: true);
+        await File(p.join(shared.path, '$withdrawalId.progress.json'))
+            .writeAsString(text, encoding: utf8, flush: true);
+      } catch (_) {}
+    }
   }
 
   Future<void> _writeRestoreMarker(String withdrawalId, int count) async {

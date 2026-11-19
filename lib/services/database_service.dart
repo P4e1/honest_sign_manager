@@ -246,6 +246,43 @@ class DatabaseService {
     return rows.map(MarkingCode.fromMap).toList();
   }
 
+  /// Отметка кода, который был напечатан и уже удалён с терминала при изъятии.
+  static const printedDeletedStatus = 'printed_deleted';
+
+  /// Коды терминала из записей «Загружено» и «Изъят», кроме уже удалённых
+  /// напечатанных.
+  Future<List<MarkingCode>> getKnownCodesForTerminal(String terminalKey) async {
+    final rows = await _db.rawQuery('''
+      SELECT c.* FROM codes c
+      JOIN upload_records r ON r.id = c.record_id
+      WHERE c.terminal_key = ?
+        AND r.status IN (?, ?)
+        AND (c.status IS NULL OR c.status <> ?)
+      ORDER BY c.id
+    ''', [
+      terminalKey,
+      RecordStatus.loaded,
+      RecordStatus.withdrawn,
+      printedDeletedStatus,
+    ]);
+    return rows.map(MarkingCode.fromMap).toList();
+  }
+
+  Future<void> markCodesPrintedDeleted(List<int> ids) async {
+    const chunk = 400;
+    for (var i = 0; i < ids.length; i += chunk) {
+      final part =
+          ids.sublist(i, (i + chunk < ids.length) ? i + chunk : ids.length);
+      final ph = List.filled(part.length, '?').join(',');
+      await _db.update(
+        'codes',
+        {'status': printedDeletedStatus},
+        where: 'id IN ($ph)',
+        whereArgs: part,
+      );
+    }
+  }
+
   Future<List<UploadRecord>> getRecordsByStoreIds(
       Set<String> storeIds) async {
     if (storeIds.isEmpty) return [];

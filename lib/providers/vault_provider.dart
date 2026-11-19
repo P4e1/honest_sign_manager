@@ -78,6 +78,10 @@ class VaultProvider extends ChangeNotifier {
       final result = await _service.withdraw(
         terminal: terminal,
         reason: reason,
+        onStatus: (text) {
+          progressText = text;
+          notifyListeners();
+        },
         onProgress: (done, total) {
           progressText = 'Удаление кодов: $done из $total';
           notifyListeners();
@@ -113,6 +117,10 @@ class VaultProvider extends ChangeNotifier {
     try {
       final result = await _service.restore(
         withdrawal: withdrawal,
+        onStatus: (text) {
+          progressText = text;
+          notifyListeners();
+        },
         onProgress: (done, total) {
           progressText = 'Возврат кодов: $done из $total';
           notifyListeners();

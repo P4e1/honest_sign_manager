@@ -120,11 +120,13 @@ class TerminalApi {
     int pageSize = 1000,
     int maxPages = 50,
     void Function(int loaded)? onProgress,
+    void Function(int pageNumber, int count, Duration took)? onPage,
   }) async {
     final all = <dynamic>[];
     var skip = 0;
 
     for (var page = 0; page < maxPages; page++) {
+      final watch = Stopwatch()..start();
       final res = await getLabelingHistory(
         terminal: terminal,
         exportStatus: exportStatus,
@@ -132,6 +134,7 @@ class TerminalApi {
         take: pageSize,
         createdAtAfter: createdAtAfter,
       );
+      watch.stop();
 
       if (!res.ok) return res;
 
@@ -139,6 +142,7 @@ class TerminalApi {
       if (data is! List || data.isEmpty) break;
 
       all.addAll(data);
+      onPage?.call(page + 1, data.length, watch.elapsed);
       onProgress?.call(all.length);
 
       if (data.length < pageSize) break;
@@ -146,6 +150,27 @@ class TerminalApi {
     }
 
     return ApiResult(ok: true, statusCode: 200, data: all);
+  }
+
+  /// Проверка связи: любой HTTP-ответ, даже 404, означает, что терминал в сети.
+  /// Ошибка возвращается только при отсутствии ответа (таймаут, отказ, нет маршрута).
+  static Future<ApiResult> ping(TerminalAddress terminal) async {
+    final dio = Dio(
+      BaseOptions(
+        connectTimeout: const Duration(seconds: 5),
+        receiveTimeout: const Duration(seconds: 5),
+        validateStatus: (_) => true,
+      ),
+    );
+    try {
+      final response = await dio.get(terminal.baseUrl);
+      return ApiResult(
+          ok: true, statusCode: response.statusCode, data: response.data);
+    } on DioException catch (e) {
+      return ApiResult(ok: false, error: _describeDioError(e));
+    } finally {
+      dio.close();
+    }
   }
 
   Future<ApiResult> _send(Future<Response<dynamic>> Function() request) async {
